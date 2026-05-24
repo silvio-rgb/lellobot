@@ -37,7 +37,13 @@ ADMIN_IDS = [
 
 CHANNEL_INVITE_LINK = os.getenv("CHANNEL_INVITE_LINK", "")
 ASSISTANCE_LINK = os.getenv("ASSISTANCE_LINK", "")
-WELCOME_PHOTO_FILE_ID = os.getenv("WELCOME_PHOTO_FILE_ID", "")
+
+# Foto welcome già inserita.
+# Se vuoi cambiarla da Render, crea/modifica la variabile WELCOME_PHOTO_FILE_ID.
+WELCOME_PHOTO_FILE_ID = os.getenv(
+    "WELCOME_PHOTO_FILE_ID",
+    "AgACAgQAAxkBAAMYahLSnm22bVRDTRNMTM70sTRRCpcAAlgNaxsKNJlQS7fItF7LnsUBAAMCAAN5AAM7BA"
+)
 
 FOLLOWUP_ENABLED = os.getenv("FOLLOWUP_ENABLED", "true").lower() == "true"
 FOLLOWUP_DELAY_MINUTES = int(os.getenv("FOLLOWUP_DELAY_MINUTES", "10"))
@@ -467,11 +473,6 @@ def is_admin(user_id: int) -> bool:
 
 
 async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
-    """
-    Invia il messaggio di benvenuto in privato.
-    Se WELCOME_PHOTO_FILE_ID è impostato, invia foto + caption.
-    Se la caption è troppo lunga o la foto dà errore, fa fallback su messaggio testuale.
-    """
     try:
         if WELCOME_PHOTO_FILE_ID:
             try:
