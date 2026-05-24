@@ -6,6 +6,7 @@ from pathlib import Path
 
 import aiosqlite
 from aiogram import Bot, Dispatcher, Router
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
@@ -49,7 +50,11 @@ if not BOT_TOKEN:
 Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
 Path("exports").mkdir(exist_ok=True)
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
@@ -235,18 +240,6 @@ async def save_or_update_user(
             followup_due_at
         ))
 
-        await db.commit()
-
-
-async def update_dm_status(user_id: int, chat_id: int | str, dm_sent: int, dm_error: str | None):
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("""
-        UPDATE approved_users
-        SET dm_sent = ?,
-            dm_error = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ? AND chat_id = ?
-        """, (dm_sent, dm_error, user_id, str(chat_id)))
         await db.commit()
 
 
@@ -447,7 +440,6 @@ async def send_admin_report():
             await bot.send_message(
                 chat_id=admin_id,
                 text=text,
-                parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True
             )
             print(f"[REPORT SENT] Admin {admin_id}")
@@ -475,7 +467,6 @@ async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
             chat_id=user_id,
             text=WELCOME_MESSAGE,
             reply_markup=welcome_keyboard(),
-            parse_mode=ParseMode.HTML,
             disable_web_page_preview=True
         )
 
@@ -495,7 +486,6 @@ async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
                 chat_id=user_id,
                 text=WELCOME_MESSAGE,
                 reply_markup=welcome_keyboard(),
-                parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True
             )
             return True, None
@@ -526,7 +516,6 @@ Dopo l'approvazione riceverai tutte le istruzioni in privato."""
     await message.answer(
         text,
         reply_markup=start_keyboard(),
-        parse_mode=ParseMode.HTML,
         disable_web_page_preview=True
     )
 
@@ -542,8 +531,7 @@ async def help_handler(message: Message):
 Comandi admin:
 /stats - Statistiche complete
 /report - Invia report immediato agli admin
-/export - Esporta utenti CSV""",
-        parse_mode=ParseMode.HTML
+/export - Esporta utenti CSV"""
     )
 
 
@@ -659,7 +647,6 @@ async def stats_handler(message: Message):
 
     await message.answer(
         text,
-        parse_mode=ParseMode.HTML,
         disable_web_page_preview=True
     )
 
@@ -761,7 +748,6 @@ async def followup_worker():
                         chat_id=user_id,
                         text=FOLLOWUP_MESSAGE,
                         reply_markup=welcome_keyboard(),
-                        parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True
                     )
 
