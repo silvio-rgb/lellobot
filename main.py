@@ -41,30 +41,28 @@ ASSISTANCE_LINK = os.getenv("ASSISTANCE_LINK", "")
 FOLLOWUP_ENABLED = os.getenv("FOLLOWUP_ENABLED", "true").lower() == "true"
 FOLLOWUP_DELAY_MINUTES = int(os.getenv("FOLLOWUP_DELAY_MINUTES", "10"))
 
-# FOTO (file_id telegram) — se vuoi metterlo in Render env:
-# WELCOME_PHOTO_FILE_ID=AgACAg....
-WELCOME_PHOTO_FILE_ID = os.getenv("WELCOME_PHOTO_FILE_ID", "").strip()
-
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN mancante. Inseriscilo nel file .env oppure nelle variabili ambiente.")
+    raise RuntimeError("BOT_TOKEN mancante. Inseriscilo nelle variabili ambiente.")
 
 Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
 Path("exports").mkdir(exist_ok=True)
 
-# ✅ aiogram >= 3.7: parse_mode nel DefaultBotProperties
+# ✅ aiogram >= 3.7: parse_mode va qui
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
-
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
 
 # ==================================================
-# MESSAGGI
+# FOTO + MESSAGGI
 # ==================================================
+
+# ✅ FOTO nel messaggio (hardcoded come vuoi tu)
+WELCOME_PHOTO_FILE_ID = "AgACAgQAAxkBAAIDaWooehfuMCfFvjUkwgABIYvzfuAlkQACDBBrGwTJQFEi1amOGHiV3gEAAwIAA3kAAzsE"
 
 WELCOME_MESSAGE = """<b>BENVENUTO NEL MIO CANALE 🏆</b>
 
@@ -289,38 +287,14 @@ def is_admin(user_id: int) -> bool:
 
 async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
     """
-    ✅ UNICO MESSAGGIO:
-    - se c'è la foto -> send_photo con caption + tastiera
-    - altrimenti -> send_message + tastiera
+    ✅ UNICO MESSAGGIO: foto + caption + bottoni
+    Fallback automatico a solo testo se:
+    - caption troppo lunga
+    - file_id non valido
     """
     try:
         if WELCOME_PHOTO_FILE_ID:
-            await bot.send_photo(
-                chat_id=user_id,
-                photo=WELCOME_PHOTO_FILE_ID,
-                caption=WELCOME_MESSAGE,
-                reply_markup=welcome_keyboard(),
-                disable_notification=True
-            )
-        else:
-            await bot.send_message(
-                chat_id=user_id,
-                text=WELCOME_MESSAGE,
-                reply_markup=welcome_keyboard(),
-                disable_web_page_preview=True
-            )
-        return True, None
-
-    except TelegramForbiddenError:
-        return False, "FORBIDDEN: utente non ha avviato il bot o ha bloccato il bot"
-
-    except TelegramBadRequest as e:
-        return False, f"BAD_REQUEST: {str(e)}"
-
-    except TelegramRetryAfter as e:
-        await asyncio.sleep(e.retry_after)
-        try:
-            if WELCOME_PHOTO_FILE_ID:
+            try:
                 await bot.send_photo(
                     chat_id=user_id,
                     photo=WELCOME_PHOTO_FILE_ID,
@@ -328,16 +302,31 @@ async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
                     reply_markup=welcome_keyboard(),
                     disable_notification=True
                 )
-            else:
+                return True, None
+            except TelegramBadRequest as e:
+                # fallback: manda solo testo (sempre 1 messaggio)
                 await bot.send_message(
                     chat_id=user_id,
                     text=WELCOME_MESSAGE,
                     reply_markup=welcome_keyboard(),
                     disable_web_page_preview=True
                 )
-            return True, None
-        except Exception as retry_error:
-            return False, f"RETRY_FAILED: {str(retry_error)}"
+                return True, f"PHOTO_FAILED: {str(e)}"
+
+        await bot.send_message(
+            chat_id=user_id,
+            text=WELCOME_MESSAGE,
+            reply_markup=welcome_keyboard(),
+            disable_web_page_preview=True
+        )
+        return True, None
+
+    except TelegramForbiddenError:
+        return False, "FORBIDDEN: utente non ha avviato il bot o ha bloccato il bot"
+
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        return await send_private_welcome(user_id)
 
     except Exception as e:
         return False, f"UNKNOWN_ERROR: {str(e)}"
@@ -532,8 +521,6 @@ async def followup_worker():
     if not FOLLOWUP_ENABLED:
         return
 
-    print("[FOLLOWUP] Worker attivo")
-
     while True:
         try:
             rows = await get_due_followups()
@@ -549,17 +536,13 @@ async def followup_worker():
                         disable_web_page_preview=True
                     )
                     await mark_followup_sent(user_id, chat_id)
-                    print(f"[FOLLOWUP SENT] {user_id}")
-
                 except TelegramForbiddenError:
-                    print(f"[FOLLOWUP FAILED] {user_id}: forbidden")
                     await mark_followup_sent(user_id, chat_id)
+                except Exception:
+                    pass
 
-                except Exception as e:
-                    print(f"[FOLLOWUP ERROR] {user_id}: {e}")
-
-        except Exception as e:
-            print(f"[FOLLOWUP WORKER ERROR] {e}")
+        except Exception:
+            pass
 
         await asyncio.sleep(60)
 
@@ -570,7 +553,6 @@ async def followup_worker():
 
 async def main():
     await init_db()
-    print("Bot avviato in polling...")
     asyncio.create_task(followup_worker())
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
