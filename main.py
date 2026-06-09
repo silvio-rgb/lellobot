@@ -41,13 +41,17 @@ ASSISTANCE_LINK = os.getenv("ASSISTANCE_LINK", "")
 FOLLOWUP_ENABLED = os.getenv("FOLLOWUP_ENABLED", "true").lower() == "true"
 FOLLOWUP_DELAY_MINUTES = int(os.getenv("FOLLOWUP_DELAY_MINUTES", "10"))
 
+# FOTO (file_id telegram) — se vuoi metterlo in Render env:
+# WELCOME_PHOTO_FILE_ID=AgACAg....
+WELCOME_PHOTO_FILE_ID = os.getenv("WELCOME_PHOTO_FILE_ID", "").strip()
+
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN mancante. Inseriscilo nelle variabili ambiente di Render.")
+    raise RuntimeError("BOT_TOKEN mancante. Inseriscilo nel file .env oppure nelle variabili ambiente.")
 
 Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
 Path("exports").mkdir(exist_ok=True)
 
-# ✅ FIX aiogram >= 3.7: parse_mode va nel DefaultBotProperties
+# ✅ aiogram >= 3.7: parse_mode nel DefaultBotProperties
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -59,11 +63,8 @@ dp.include_router(router)
 
 
 # ==================================================
-# FOTO + MESSAGGI
+# MESSAGGI
 # ==================================================
-
-# ✅ FOTO del messaggio (messa nel codice)
-WELCOME_PHOTO_FILE_ID = "AgACAgQAAxkBAAIDaWooehfuMCfFvjUkwgABIYvzfuAlkQACDBBrGwTJQFEi1amOGHiV3gEAAwIAA3kAAzsE"
 
 WELCOME_MESSAGE = """<b>BENVENUTO NEL MIO CANALE 🏆</b>
 
@@ -218,7 +219,6 @@ async def save_or_update_user(
 
 async def get_due_followups():
     now = datetime.utcnow().isoformat()
-
     async with aiosqlite.connect(DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
@@ -288,39 +288,57 @@ def is_admin(user_id: int) -> bool:
 
 
 async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
+    """
+    ✅ UNICO MESSAGGIO:
+    - se c'è la foto -> send_photo con caption + tastiera
+    - altrimenti -> send_message + tastiera
+    """
     try:
-        # 1) foto
         if WELCOME_PHOTO_FILE_ID:
-            await bot.send_photo(chat_id=user_id, photo=WELCOME_PHOTO_FILE_ID, disable_notification=True)
-
-        # 2) testo + tastiera
-        await bot.send_message(
-            chat_id=user_id,
-            text=WELCOME_MESSAGE,
-            reply_markup=welcome_keyboard(),
-            disable_web_page_preview=True
-        )
-        return True, None
-
-    except TelegramForbiddenError:
-        return False, "FORBIDDEN: utente non ha avviato il bot o ha bloccato il bot"
-    except TelegramBadRequest as e:
-        return False, f"BAD_REQUEST: {str(e)}"
-    except TelegramRetryAfter as e:
-        await asyncio.sleep(e.retry_after)
-        try:
-            if WELCOME_PHOTO_FILE_ID:
-                await bot.send_photo(chat_id=user_id, photo=WELCOME_PHOTO_FILE_ID, disable_notification=True)
-
+            await bot.send_photo(
+                chat_id=user_id,
+                photo=WELCOME_PHOTO_FILE_ID,
+                caption=WELCOME_MESSAGE,
+                reply_markup=welcome_keyboard(),
+                disable_notification=True
+            )
+        else:
             await bot.send_message(
                 chat_id=user_id,
                 text=WELCOME_MESSAGE,
                 reply_markup=welcome_keyboard(),
                 disable_web_page_preview=True
             )
+        return True, None
+
+    except TelegramForbiddenError:
+        return False, "FORBIDDEN: utente non ha avviato il bot o ha bloccato il bot"
+
+    except TelegramBadRequest as e:
+        return False, f"BAD_REQUEST: {str(e)}"
+
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            if WELCOME_PHOTO_FILE_ID:
+                await bot.send_photo(
+                    chat_id=user_id,
+                    photo=WELCOME_PHOTO_FILE_ID,
+                    caption=WELCOME_MESSAGE,
+                    reply_markup=welcome_keyboard(),
+                    disable_notification=True
+                )
+            else:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=WELCOME_MESSAGE,
+                    reply_markup=welcome_keyboard(),
+                    disable_web_page_preview=True
+                )
             return True, None
         except Exception as retry_error:
             return False, f"RETRY_FAILED: {str(retry_error)}"
+
     except Exception as e:
         return False, f"UNKNOWN_ERROR: {str(e)}"
 
@@ -473,7 +491,6 @@ async def export_handler(message: Message):
         return
 
     rows = await get_all_users()
-
     export_dir = Path("exports")
     export_dir.mkdir(exist_ok=True)
 
@@ -520,7 +537,6 @@ async def followup_worker():
     while True:
         try:
             rows = await get_due_followups()
-
             for row in rows:
                 user_id = row["user_id"]
                 chat_id = row["chat_id"]
