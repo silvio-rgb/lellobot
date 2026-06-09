@@ -6,6 +6,7 @@ from pathlib import Path
 
 import aiosqlite
 from aiogram import Bot, Dispatcher, Router
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
@@ -40,8 +41,7 @@ ASSISTANCE_LINK = os.getenv("ASSISTANCE_LINK", "")
 FOLLOWUP_ENABLED = os.getenv("FOLLOWUP_ENABLED", "true").lower() == "true"
 FOLLOWUP_DELAY_MINUTES = int(os.getenv("FOLLOWUP_DELAY_MINUTES", "10"))
 
-# ✅ FOTO del messaggio di benvenuto (file_id Telegram). Mettila nelle Env Vars su Render:
-# WELCOME_PHOTO_FILE_ID=AgACAg....
+# ✅ FOTO del messaggio di benvenuto (file_id Telegram)
 WELCOME_PHOTO_FILE_ID = os.getenv("WELCOME_PHOTO_FILE_ID", "").strip()
 
 if not BOT_TOKEN:
@@ -51,7 +51,12 @@ if not BOT_TOKEN:
 Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
 Path("exports").mkdir(exist_ok=True)
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+# ✅ FIX aiogram >= 3.7.0: parse_mode va messo in DefaultBotProperties
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
@@ -233,18 +238,6 @@ async def save_or_update_user(
         await db.commit()
 
 
-async def update_dm_status(user_id: int, chat_id: int | str, dm_sent: int, dm_error: str | None):
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("""
-        UPDATE approved_users
-        SET dm_sent = ?,
-            dm_error = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ? AND chat_id = ?
-        """, (dm_sent, dm_error, user_id, str(chat_id)))
-        await db.commit()
-
-
 async def get_due_followups():
     now = datetime.utcnow().isoformat()
 
@@ -330,14 +323,17 @@ async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
     try:
         # ✅ 1) invia foto (se configurata)
         if WELCOME_PHOTO_FILE_ID:
-            await bot.send_photo(chat_id=user_id, photo=WELCOME_PHOTO_FILE_ID, disable_notification=True)
+            await bot.send_photo(
+                chat_id=user_id,
+                photo=WELCOME_PHOTO_FILE_ID,
+                disable_notification=True
+            )
 
         # ✅ 2) invia testo + tastiera
         await bot.send_message(
             chat_id=user_id,
             text=WELCOME_MESSAGE,
             reply_markup=welcome_keyboard(),
-            parse_mode=ParseMode.HTML,
             disable_web_page_preview=True
         )
 
@@ -353,16 +349,20 @@ async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
         await asyncio.sleep(e.retry_after)
         try:
             if WELCOME_PHOTO_FILE_ID:
-                await bot.send_photo(chat_id=user_id, photo=WELCOME_PHOTO_FILE_ID, disable_notification=True)
+                await bot.send_photo(
+                    chat_id=user_id,
+                    photo=WELCOME_PHOTO_FILE_ID,
+                    disable_notification=True
+                )
 
             await bot.send_message(
                 chat_id=user_id,
                 text=WELCOME_MESSAGE,
                 reply_markup=welcome_keyboard(),
-                parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True
             )
             return True, None
+
         except Exception as retry_error:
             return False, f"RETRY_FAILED: {str(retry_error)}"
 
@@ -393,17 +393,14 @@ scrivi /photoid e poi inviami la foto qui in chat privata.
     await message.answer(
         text,
         reply_markup=start_keyboard(),
-        parse_mode=ParseMode.HTML,
         disable_web_page_preview=True
     )
 
 
-# ✅ Comando per ottenere file_id della foto
 PHOTOID_WAITING: set[int] = set()
 
 @router.message(Command("photoid"))
 async def photoid_command(message: Message):
-    # meglio farlo solo in privato
     if message.chat.type != "private":
         await message.answer("Scrivimi in privato e usa /photoid lì.")
         return
@@ -411,10 +408,8 @@ async def photoid_command(message: Message):
     PHOTOID_WAITING.add(message.from_user.id)
     await message.answer("Ok ✅ Ora inviami la foto e ti mando il FILE_ID.")
 
-
 @router.message(lambda m: m.photo is not None)
 async def photoid_receiver(message: Message):
-    # rispondiamo con file_id solo se l'utente ha chiesto /photoid, e solo in privato
     if message.chat.type != "private":
         return
 
@@ -424,7 +419,7 @@ async def photoid_receiver(message: Message):
 
     PHOTOID_WAITING.discard(uid)
     file_id = message.photo[-1].file_id
-    await message.answer(f"FILE_ID:\n<code>{file_id}</code>", parse_mode=ParseMode.HTML)
+    await message.answer(f"FILE_ID:\n<code>{file_id}</code>")
 
 
 @router.message(Command("help"))
@@ -439,7 +434,6 @@ async def help_handler(message: Message):
 Comandi admin:
 /stats - Statistiche
 /export - Esporta utenti CSV""",
-        parse_mode=ParseMode.HTML
     )
 
 
@@ -484,14 +478,7 @@ async def join_request_handler(join_request: ChatJoinRequest):
 
     try:
         await bot.approve_chat_join_request(chat_id=chat.id, user_id=user.id)
-
-        await save_event(
-            event_type="chat_join_request_approved",
-            user_id=user.id,
-            chat_id=chat.id,
-            payload="approved"
-        )
-
+        await save_event("chat_join_request_approved", user.id, chat.id, "approved")
         print(f"[APPROVED] {user.id}")
 
     except TelegramBadRequest as e:
@@ -520,10 +507,7 @@ async def join_request_handler(join_request: ChatJoinRequest):
         followup_due_at=followup_due_at
     )
 
-    if dm_sent:
-        print(f"[DM SENT] {user.id}")
-    else:
-        print(f"[DM FAILED] {user.id}: {dm_error}")
+    print(f"[DM SENT] {user.id}" if dm_sent else f"[DM FAILED] {user.id}: {dm_error}")
 
 
 # ==================================================
@@ -537,14 +521,12 @@ async def stats_handler(message: Message):
         return
 
     stats = await get_stats()
-
     text = f"""<b>Statistiche bot</b>
 
 Utenti approvati: <b>{stats["total"]}</b>
 DM inviati: <b>{stats["dm_sent"]}</b>
 DM falliti: <b>{stats["dm_failed"]}</b>"""
-
-    await message.answer(text, parse_mode=ParseMode.HTML)
+    await message.answer(text)
 
 
 # ==================================================
@@ -570,6 +552,7 @@ async def export_handler(message: Message):
             "user_id", "username", "first_name", "last_name", "chat_id", "chat_title",
             "request_date", "approved_date", "dm_sent", "dm_error", "followup_sent", "created_at"
         ]
+
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
 
@@ -615,7 +598,6 @@ async def followup_worker():
                         chat_id=user_id,
                         text=FOLLOWUP_MESSAGE,
                         reply_markup=welcome_keyboard(),
-                        parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True
                     )
 
