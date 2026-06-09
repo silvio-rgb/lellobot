@@ -6,7 +6,6 @@ from pathlib import Path
 
 import aiosqlite
 from aiogram import Bot, Dispatcher, Router
-from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
@@ -38,30 +37,21 @@ ADMIN_IDS = [
 CHANNEL_INVITE_LINK = os.getenv("CHANNEL_INVITE_LINK", "")
 ASSISTANCE_LINK = os.getenv("ASSISTANCE_LINK", "")
 
-# Foto welcome già inserita.
-# Se vuoi cambiarla da Render, crea/modifica la variabile WELCOME_PHOTO_FILE_ID.
-WELCOME_PHOTO_FILE_ID = os.getenv(
-    "WELCOME_PHOTO_FILE_ID",
-    "AgACAgQAAxkBAAMYahLSnm22bVRDTRNMTM70sTRRCpcAAlgNaxsKNJlQS7fItF7LnsUBAAMCAAN5AAM7BA"
-)
-
 FOLLOWUP_ENABLED = os.getenv("FOLLOWUP_ENABLED", "true").lower() == "true"
 FOLLOWUP_DELAY_MINUTES = int(os.getenv("FOLLOWUP_DELAY_MINUTES", "10"))
 
-REPORT_ENABLED = os.getenv("REPORT_ENABLED", "true").lower() == "true"
-REPORT_INTERVAL_HOURS = int(os.getenv("REPORT_INTERVAL_HOURS", "2"))
+# ✅ FOTO del messaggio di benvenuto (file_id Telegram). Mettila nelle Env Vars su Render:
+# WELCOME_PHOTO_FILE_ID=AgACAg....
+WELCOME_PHOTO_FILE_ID = os.getenv("WELCOME_PHOTO_FILE_ID", "").strip()
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN mancante. Inseriscilo nel file .env oppure nelle variabili ambiente.")
 
+
 Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
 Path("exports").mkdir(exist_ok=True)
 
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
-
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
@@ -73,11 +63,17 @@ dp.include_router(router)
 
 WELCOME_MESSAGE = """<b>BENVENUTO NEL MIO CANALE 🏆</b>
 
-📌 In primis ti assicuro che tutte le promo che vedrai qui, non le troverai da nessuna altra parte!
+📌In primis ti assicuro che tutte le promo che vedrai qui, non le troverai da nessuna altra parte!
 
-Riceverai bonus periodici, quote maggiorate, premi continui solo per la nostra rete, oltre alle mie analisi. 🎁🎁
+Riceverai bonus periodici, quote maggiorate, premi continui solo per la nostra rete, oltre alle mie analisi.
+<b>TUTTI I BONUS SONO REAL CASH</b>
 
-Se invece vuoi accedere a tutte le analisi in maniera <b>GRATUITA</b>, contatta la mia assistenza, che ti spiegherà come entrare 👇"""
+Se invece vuoi accedere a tutte le analisi in maniera <b>GRATUITA</b>, contatta la mia assistenza, che ti spiegherà come entrare 👇
+
+<b>TI RICORDO CHE A BREVE PARTIRÀ LA SCALATA DEI MONDIALI 🏆</b>
+<b>DA 20,00€ ——&gt; 1000,00€ 🔝</b>
+
+<b>I PRIMI 6 STEP IN CASO DI PERDITA SONO RIMBORSATI 🎁</b>"""
 
 FOLLOWUP_MESSAGE = """<b>Hai già letto il messaggio fissato? 🏆</b>
 
@@ -85,10 +81,6 @@ Ricordati di seguire le istruzioni nel canale.
 
 Per qualsiasi dubbio puoi contattare l'assistenza qui sotto 👇"""
 
-
-# ==================================================
-# KEYBOARDS
-# ==================================================
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
     buttons = []
@@ -172,19 +164,6 @@ async def init_db():
         )
         """)
 
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS admin_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sent_at TEXT,
-            total_approved INTEGER,
-            today_approved INTEGER,
-            last_2h_approved INTEGER,
-            dm_sent INTEGER,
-            dm_failed INTEGER,
-            followup_sent INTEGER
-        )
-        """)
-
         await db.commit()
 
 
@@ -254,6 +233,18 @@ async def save_or_update_user(
         await db.commit()
 
 
+async def update_dm_status(user_id: int, chat_id: int | str, dm_sent: int, dm_error: str | None):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+        UPDATE approved_users
+        SET dm_sent = ?,
+            dm_error = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ? AND chat_id = ?
+        """, (dm_sent, dm_error, user_id, str(chat_id)))
+        await db.commit()
+
+
 async def get_due_followups():
     now = datetime.utcnow().isoformat()
 
@@ -285,99 +276,21 @@ async def mark_followup_sent(user_id: int, chat_id: str):
 
 
 async def get_stats():
-    now = datetime.utcnow()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    last_2h = (now - timedelta(hours=2)).isoformat()
-
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        total_cursor = await db.execute("""
-        SELECT COUNT(*)
-        FROM approved_users
-        WHERE approved_date IS NOT NULL
-          AND approved_date != ''
-        """)
+        total_cursor = await db.execute("SELECT COUNT(*) FROM approved_users")
         total = (await total_cursor.fetchone())[0]
 
-        today_cursor = await db.execute("""
-        SELECT COUNT(*)
-        FROM approved_users
-        WHERE approved_date >= ?
-        """, (today_start,))
-        today = (await today_cursor.fetchone())[0]
-
-        last_2h_cursor = await db.execute("""
-        SELECT COUNT(*)
-        FROM approved_users
-        WHERE approved_date >= ?
-        """, (last_2h,))
-        last_2h_count = (await last_2h_cursor.fetchone())[0]
-
-        dm_sent_cursor = await db.execute("""
-        SELECT COUNT(*)
-        FROM approved_users
-        WHERE dm_sent = 1
-        """)
+        dm_sent_cursor = await db.execute("SELECT COUNT(*) FROM approved_users WHERE dm_sent = 1")
         dm_sent = (await dm_sent_cursor.fetchone())[0]
 
         dm_failed_cursor = await db.execute("""
         SELECT COUNT(*)
         FROM approved_users
-        WHERE dm_sent = 0
-          AND dm_error IS NOT NULL
+        WHERE dm_sent = 0 AND dm_error IS NOT NULL
         """)
         dm_failed = (await dm_failed_cursor.fetchone())[0]
 
-        followup_sent_cursor = await db.execute("""
-        SELECT COUNT(*)
-        FROM approved_users
-        WHERE followup_sent = 1
-        """)
-        followup_sent = (await followup_sent_cursor.fetchone())[0]
-
-        by_chat_cursor = await db.execute("""
-        SELECT chat_title, COUNT(*)
-        FROM approved_users
-        WHERE approved_date >= ?
-        GROUP BY chat_title
-        ORDER BY COUNT(*) DESC
-        """, (today_start,))
-        by_chat = await by_chat_cursor.fetchall()
-
-        return {
-            "total": total,
-            "today": today,
-            "last_2h": last_2h_count,
-            "dm_sent": dm_sent,
-            "dm_failed": dm_failed,
-            "followup_sent": followup_sent,
-            "by_chat": by_chat
-        }
-
-
-async def save_admin_report(stats: dict):
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute("""
-        INSERT INTO admin_reports (
-            sent_at,
-            total_approved,
-            today_approved,
-            last_2h_approved,
-            dm_sent,
-            dm_failed,
-            followup_sent
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            datetime.utcnow().isoformat(),
-            stats["total"],
-            stats["today"],
-            stats["last_2h"],
-            stats["dm_sent"],
-            stats["dm_failed"],
-            stats["followup_sent"],
-        ))
-
-        await db.commit()
+        return {"total": total, "dm_sent": dm_sent, "dm_failed": dm_failed}
 
 
 async def get_all_users():
@@ -406,65 +319,6 @@ async def get_all_users():
 
 
 # ==================================================
-# REPORT ADMIN
-# ==================================================
-
-async def build_report_text():
-    stats = await get_stats()
-
-    text = f"""<b>📊 Report ZiolelloBet</b>
-
-<b>Entrati ultime 2 ore:</b> {stats["last_2h"]}
-<b>Entrati oggi:</b> {stats["today"]}
-<b>Entrati totali:</b> {stats["total"]}
-
-<b>DM benvenuto inviati:</b> {stats["dm_sent"]}
-<b>DM falliti:</b> {stats["dm_failed"]}
-<b>Follow-up inviati:</b> {stats["followup_sent"]}
-
-<b>Dettaglio canali/gruppi oggi:</b>"""
-
-    if stats["by_chat"]:
-        for chat_title, count in stats["by_chat"]:
-            title = chat_title or "Chat senza nome"
-            text += f"\n• {title}: <b>{count}</b>"
-    else:
-        text += "\n• Nessun ingresso registrato oggi."
-
-    text += """
-
-<i>Nota: il report conta gli utenti approvati automaticamente dal bot.</i>"""
-
-    return text
-
-
-async def send_admin_report():
-    if not ADMIN_IDS:
-        print("[REPORT] Nessun ADMIN_IDS impostato.")
-        return
-
-    stats = await get_stats()
-    text = await build_report_text()
-
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(
-                chat_id=admin_id,
-                text=text,
-                disable_web_page_preview=True
-            )
-            print(f"[REPORT SENT] Admin {admin_id}")
-
-        except TelegramForbiddenError:
-            print(f"[REPORT FAILED] Admin {admin_id}: bot bloccato o chat non avviata")
-
-        except Exception as e:
-            print(f"[REPORT ERROR] Admin {admin_id}: {e}")
-
-    await save_admin_report(stats)
-
-
-# ==================================================
 # UTILITY
 # ==================================================
 
@@ -474,30 +328,18 @@ def is_admin(user_id: int) -> bool:
 
 async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
     try:
+        # ✅ 1) invia foto (se configurata)
         if WELCOME_PHOTO_FILE_ID:
-            try:
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=WELCOME_PHOTO_FILE_ID,
-                    caption=WELCOME_MESSAGE,
-                    reply_markup=welcome_keyboard()
-                )
-            except TelegramBadRequest as photo_error:
-                print(f"[WELCOME PHOTO ERROR] {user_id}: {photo_error}")
+            await bot.send_photo(chat_id=user_id, photo=WELCOME_PHOTO_FILE_ID, disable_notification=True)
 
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=WELCOME_MESSAGE,
-                    reply_markup=welcome_keyboard(),
-                    disable_web_page_preview=True
-                )
-        else:
-            await bot.send_message(
-                chat_id=user_id,
-                text=WELCOME_MESSAGE,
-                reply_markup=welcome_keyboard(),
-                disable_web_page_preview=True
-            )
+        # ✅ 2) invia testo + tastiera
+        await bot.send_message(
+            chat_id=user_id,
+            text=WELCOME_MESSAGE,
+            reply_markup=welcome_keyboard(),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
+        )
 
         return True, None
 
@@ -509,35 +351,18 @@ async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
 
     except TelegramRetryAfter as e:
         await asyncio.sleep(e.retry_after)
-
         try:
             if WELCOME_PHOTO_FILE_ID:
-                try:
-                    await bot.send_photo(
-                        chat_id=user_id,
-                        photo=WELCOME_PHOTO_FILE_ID,
-                        caption=WELCOME_MESSAGE,
-                        reply_markup=welcome_keyboard()
-                    )
-                except TelegramBadRequest as photo_error:
-                    print(f"[WELCOME PHOTO RETRY ERROR] {user_id}: {photo_error}")
+                await bot.send_photo(chat_id=user_id, photo=WELCOME_PHOTO_FILE_ID, disable_notification=True)
 
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=WELCOME_MESSAGE,
-                        reply_markup=welcome_keyboard(),
-                        disable_web_page_preview=True
-                    )
-            else:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=WELCOME_MESSAGE,
-                    reply_markup=welcome_keyboard(),
-                    disable_web_page_preview=True
-                )
-
+            await bot.send_message(
+                chat_id=user_id,
+                text=WELCOME_MESSAGE,
+                reply_markup=welcome_keyboard(),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
             return True, None
-
         except Exception as retry_error:
             return False, f"RETRY_FAILED: {str(retry_error)}"
 
@@ -546,7 +371,7 @@ async def send_private_welcome(user_id: int) -> tuple[bool, str | None]:
 
 
 # ==================================================
-# HANDLER START
+# HANDLER START + FILE_ID FOTO
 # ==================================================
 
 @router.message(CommandStart())
@@ -559,13 +384,47 @@ Questo è il bot ufficiale per l'accesso al canale.
 
 Per entrare, clicca il bottone qui sotto e richiedi l'accesso.
 
-Dopo l'approvazione riceverai tutte le istruzioni in privato."""
+Dopo l'approvazione riceverai tutte le istruzioni in privato.
+
+<b>Per prendere il FILE_ID di una foto</b>:
+scrivi /photoid e poi inviami la foto qui in chat privata.
+"""
 
     await message.answer(
         text,
         reply_markup=start_keyboard(),
+        parse_mode=ParseMode.HTML,
         disable_web_page_preview=True
     )
+
+
+# ✅ Comando per ottenere file_id della foto
+PHOTOID_WAITING: set[int] = set()
+
+@router.message(Command("photoid"))
+async def photoid_command(message: Message):
+    # meglio farlo solo in privato
+    if message.chat.type != "private":
+        await message.answer("Scrivimi in privato e usa /photoid lì.")
+        return
+
+    PHOTOID_WAITING.add(message.from_user.id)
+    await message.answer("Ok ✅ Ora inviami la foto e ti mando il FILE_ID.")
+
+
+@router.message(lambda m: m.photo is not None)
+async def photoid_receiver(message: Message):
+    # rispondiamo con file_id solo se l'utente ha chiesto /photoid, e solo in privato
+    if message.chat.type != "private":
+        return
+
+    uid = message.from_user.id
+    if uid not in PHOTOID_WAITING:
+        return
+
+    PHOTOID_WAITING.discard(uid)
+    file_id = message.photo[-1].file_id
+    await message.answer(f"FILE_ID:\n<code>{file_id}</code>", parse_mode=ParseMode.HTML)
 
 
 @router.message(Command("help"))
@@ -575,31 +434,12 @@ async def help_handler(message: Message):
 
 /start - Avvia il bot
 /help - Aiuto
+/photoid - Ottieni file_id foto (in privato)
 
 Comandi admin:
-/stats - Statistiche complete
-/report - Invia report immediato agli admin
-/export - Esporta utenti CSV
-
-Utility admin:
-Invia una foto al bot per ricevere il suo file_id."""
-    )
-
-
-# ==================================================
-# ADMIN: OTTIENI FILE_ID FOTO
-# ==================================================
-
-@router.message(lambda message: message.photo)
-async def photo_id_handler(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-
-    photo = message.photo[-1]
-    file_id = photo.file_id
-
-    await message.answer(
-        f"<b>File ID foto:</b>\n<code>{file_id}</code>"
+/stats - Statistiche
+/export - Esporta utenti CSV""",
+        parse_mode=ParseMode.HTML
     )
 
 
@@ -617,9 +457,7 @@ async def join_request_handler(join_request: ChatJoinRequest):
 
     followup_due_at = None
     if FOLLOWUP_ENABLED:
-        followup_due_at = (
-            datetime.utcnow() + timedelta(minutes=FOLLOWUP_DELAY_MINUTES)
-        ).isoformat()
+        followup_due_at = (datetime.utcnow() + timedelta(minutes=FOLLOWUP_DELAY_MINUTES)).isoformat()
 
     await save_event(
         event_type="chat_join_request_received",
@@ -645,10 +483,7 @@ async def join_request_handler(join_request: ChatJoinRequest):
     )
 
     try:
-        await bot.approve_chat_join_request(
-            chat_id=chat.id,
-            user_id=user.id
-        )
+        await bot.approve_chat_join_request(chat_id=chat.id, user_id=user.id)
 
         await save_event(
             event_type="chat_join_request_approved",
@@ -660,22 +495,12 @@ async def join_request_handler(join_request: ChatJoinRequest):
         print(f"[APPROVED] {user.id}")
 
     except TelegramBadRequest as e:
-        await save_event(
-            event_type="approval_failed",
-            user_id=user.id,
-            chat_id=chat.id,
-            payload=str(e)
-        )
+        await save_event("approval_failed", user.id, chat.id, str(e))
         print(f"[APPROVAL ERROR] {e}")
         return
 
     except Exception as e:
-        await save_event(
-            event_type="approval_failed",
-            user_id=user.id,
-            chat_id=chat.id,
-            payload=str(e)
-        )
+        await save_event("approval_failed", user.id, chat.id, str(e))
         print(f"[APPROVAL UNKNOWN ERROR] {e}")
         return
 
@@ -711,26 +536,15 @@ async def stats_handler(message: Message):
         await message.answer("Non hai il permesso di usare questo comando.")
         return
 
-    text = await build_report_text()
+    stats = await get_stats()
 
-    await message.answer(
-        text,
-        disable_web_page_preview=True
-    )
+    text = f"""<b>Statistiche bot</b>
 
+Utenti approvati: <b>{stats["total"]}</b>
+DM inviati: <b>{stats["dm_sent"]}</b>
+DM falliti: <b>{stats["dm_failed"]}</b>"""
 
-# ==================================================
-# ADMIN: REPORT
-# ==================================================
-
-@router.message(Command("report"))
-async def report_handler(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("Non hai il permesso di usare questo comando.")
-        return
-
-    await send_admin_report()
-    await message.answer("✅ Report inviato agli admin.")
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 # ==================================================
@@ -753,20 +567,9 @@ async def export_handler(message: Message):
 
     with open(filepath, "w", newline="", encoding="utf-8") as csvfile:
         fieldnames = [
-            "user_id",
-            "username",
-            "first_name",
-            "last_name",
-            "chat_id",
-            "chat_title",
-            "request_date",
-            "approved_date",
-            "dm_sent",
-            "dm_error",
-            "followup_sent",
-            "created_at"
+            "user_id", "username", "first_name", "last_name", "chat_id", "chat_title",
+            "request_date", "approved_date", "dm_sent", "dm_error", "followup_sent", "created_at"
         ]
-
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
 
@@ -786,10 +589,7 @@ async def export_handler(message: Message):
                 "created_at": row["created_at"],
             })
 
-    await message.answer_document(
-        FSInputFile(filepath),
-        caption="Export utenti approvati CSV"
-    )
+    await message.answer_document(FSInputFile(filepath), caption="Export utenti approvati CSV")
 
 
 # ==================================================
@@ -798,7 +598,6 @@ async def export_handler(message: Message):
 
 async def followup_worker():
     if not FOLLOWUP_ENABLED:
-        print("[FOLLOWUP] Worker disattivato")
         return
 
     print("[FOLLOWUP] Worker attivo")
@@ -816,11 +615,11 @@ async def followup_worker():
                         chat_id=user_id,
                         text=FOLLOWUP_MESSAGE,
                         reply_markup=welcome_keyboard(),
+                        parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True
                     )
 
                     await mark_followup_sent(user_id, chat_id)
-
                     print(f"[FOLLOWUP SENT] {user_id}")
 
                 except TelegramForbiddenError:
@@ -837,27 +636,6 @@ async def followup_worker():
 
 
 # ==================================================
-# REPORT LOOP
-# ==================================================
-
-async def report_worker():
-    if not REPORT_ENABLED:
-        print("[REPORT] Worker disattivato")
-        return
-
-    print(f"[REPORT] Worker attivo — ogni {REPORT_INTERVAL_HOURS} ore")
-
-    while True:
-        try:
-            await asyncio.sleep(REPORT_INTERVAL_HOURS * 60 * 60)
-            await send_admin_report()
-
-        except Exception as e:
-            print(f"[REPORT WORKER ERROR] {e}")
-            await asyncio.sleep(60)
-
-
-# ==================================================
 # MAIN
 # ==================================================
 
@@ -869,7 +647,6 @@ async def main():
     print("Assicurati che il link abbia richiesta approvazione attiva.")
 
     asyncio.create_task(followup_worker())
-    asyncio.create_task(report_worker())
 
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
